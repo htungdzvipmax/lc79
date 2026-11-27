@@ -882,6 +882,85 @@ body .site-foot,body .login-foot{color:#c3a995!important}
 /* ===== NÚT NHẠC NỀN ===== */
 .bgm-btn{position:fixed;right:12px;bottom:12px;z-index:60;padding:8px 12px;font:800 11px var(--font);letter-spacing:.04em;color:var(--k-text);background:var(--k-panel);border:1px solid var(--k-line2);cursor:pointer;box-shadow:0 6px 16px #0004}
 .bgm-btn:hover{border-color:var(--k-accent)}
+
+/* === ĐÃ CƯỢC — nổi bật === */
+.full-history{
+  border:2px solid #e8b84a!important;
+  box-shadow:0 0 0 1px #e8b84a44, 0 8px 28px #00000066!important;
+  background:linear-gradient(180deg,#1a1006 0%,#0d0804 100%)!important;
+}
+.full-history .panel-title,
+.full-history h3{
+  color:#ffd56a!important;
+  font-size:15px!important;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+.full-history .table-scroll{
+  border-top:1px solid #e8b84a55;
+}
+.round-history-list .hist-row.placed,
+.hist-row.bet-placed,
+tr.bet-placed{
+  background:#2a1a08!important;
+  border-left:3px solid #e8b84a!important;
+}
+
+
+/* ===== LC79 Auto UI upgrade ===== */
+.auto-cap-hint{
+  margin-top:10px;padding:10px 12px;border-radius:10px;
+  background:linear-gradient(135deg,#2a1808,#1a0e06);
+  border:1px solid #e8b84a66;color:#f0d9a0;font-size:11px;line-height:1.55;font-weight:600;
+}
+#autoPanel{
+  border:1px solid #e8b84a55!important;
+  box-shadow:0 10px 32px #00000055, inset 0 1px #ffd56a22!important;
+  background:linear-gradient(165deg,#1c1008 0%,#0c0704 100%)!important;
+}
+#autoPanel .panel-title{
+  font-size:clamp(15px,3.6vw,18px)!important;
+  background:linear-gradient(90deg,#ffe6a0,#e8b84a 55%,#ffcf6b);
+  -webkit-background-clip:text;background-clip:text;color:transparent!important;
+  font-weight:900;letter-spacing:.02em;
+}
+#autoPanel .panel-subtitle{color:#d4b87a!important;font-weight:600}
+#betHistoryPanel{
+  border:2px solid #e8b84a!important;
+  box-shadow:0 0 0 1px #e8b84a33, 0 12px 36px #00000070!important;
+  background:linear-gradient(180deg,#1f1408,#0d0905)!important;
+  margin-top:18px;
+}
+#betHistoryPanel .panel-title{
+  color:#ffd56a!important;font-size:clamp(14px,3.4vw,17px)!important;
+  text-transform:uppercase;letter-spacing:.06em;font-weight:900;
+}
+#betHistoryPanel .panel-subtitle{color:#c9a86a!important}
+#betHistoryPanel .table-scroll{max-height:min(62vh,560px)}
+@media (max-width:720px){
+  .dashboard-grid{grid-template-columns:1fr!important;gap:12px!important}
+  .limit-grid{grid-template-columns:1fr 1fr!important;gap:10px!important}
+  .metric-grid, .metrics, .hero-metrics{grid-template-columns:1fr 1fr!important}
+  #betHistoryPanel .table-scroll{max-height:55vh}
+  .panel-head{flex-wrap:wrap;gap:8px}
+  .amount-control input{font-size:16px!important} /* iOS zoom avoid */
+}
+@media (min-width:900px){
+  .dashboard-grid{grid-template-columns:1.05fr .95fr!important;gap:16px}
+  #betHistoryPanel .table-scroll{max-height:58vh}
+}
+.round-history-list .hist-row,
+.hist-row{
+  border-radius:10px;padding:10px 12px;margin-bottom:6px;
+  border:1px solid #5a3a1a88;background:#160e08;
+}
+.hist-row.placed, .hist-row.bet-placed, tr.bet-placed, .hist-row.won{
+  border-left:3px solid #55d69a!important;background:#122016!important;
+}
+.hist-row.lost, .hist-row.lose{
+  border-left:3px solid #ff8276!important;background:#201210!important;
+}
+
 </style>
 </head>
 <body>
@@ -1011,29 +1090,21 @@ body .site-foot,body .login-foot{color:#c3a995!important}
       <section class="panel" id="autoPanel">
         <div class="panel-head">
           <div>
-            <h3 class="panel-title">Cài cược</h3>
-            <p class="panel-subtitle">Áp dụng cả MD5 và TX</p>
+            <h3 class="panel-title">Auto Cược 2 bàn Tài Xỉu &amp; MD5</h3>
+            <p class="panel-subtitle">Siêu tốc · API dự đoán · tự quản vốn</p>
           </div>
-          <span style="font-size:10px;color:var(--muted);font-weight:600" id="modeHint">Cân bằng ≥51%</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600" id="modeHint">API ngoài</span>
         </div>
         <div class="settings-body">
           <div class="settings-intro">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
-            <span>Cân bằng ≥51% · An toàn ≥58% · Mạo hiểm mọi phiên · nghỉ tối đa 8/100 · thua 3 tay thì chờ chắc.</span>
+            <span>Thắng 2 tay → x1.5 · thắng 3+ → x2 vốn · sai 3 tay tự dừng bàn · lãi/lỗ = số dư − vốn gốc.</span>
           </div>
           <div class="limit-grid">
             <div>
               <label class="field-label" for="bet">Mức cược</label>
               <div class="amount-control"><input id="bet" type="number" value="1000" min="1000" step="1000"><span>đ</span></div>
               <span class="limit-caption">Cược gốc mỗi lệnh</span>
-            </div>
-            <div>
-              <label class="field-label" for="mode">Chế độ</label>
-              <select class="stake-mode" id="mode" onchange="syncModeHint()">
-                <option value="canbang">Cân bằng · ≥51%</option>
-                <option value="antoan">An toàn · ≥58%</option>
-                <option value="maohiem">Mạo hiểm · mọi phiên</option>
-              </select>
             </div>
             <div>
               <label class="field-label" for="sl">Chốt lỗ</label>
@@ -1049,11 +1120,7 @@ body .site-foot,body .login-foot{color:#c3a995!important}
             <span class="limit-caption">0 = không giới hạn</span>
           </div>
           <div class="config-divider"></div>
-          <label class="tog"><input type="checkbox" id="mg"> Gấp thếp khi thua ×
-            <select id="mgmult" style="width:64px;min-height:28px;border:1px solid var(--line);border-radius:6px;background:#1a120c;padding:0 6px;margin-left:4px">
-              <option value="2">2</option><option value="1.5">1.5</option><option value="2.5">2.5</option>
-            </select>
-          </label>
+          <div class="auto-cap-hint">Quản vốn tự động: thắng liên tiếp tăng cược · sai 3 tay dừng · không gấp thếp.</div>
           <div class="table-picks">
             <label><input type="checkbox" id="pickMd5" checked> Bàn MD5</label>
             <label><input type="checkbox" id="pickTx" checked> TX thường</label>
@@ -1072,8 +1139,8 @@ body .site-foot,body .login-foot{color:#c3a995!important}
     <section class="panel log-panel full-history" id="betHistoryPanel">
       <div class="panel-head">
         <div>
-          <h3 class="panel-title">Lịch sử dự đoán & cược Auto</h3>
-          <p class="panel-subtitle">Thời gian · phiên · lựa chọn · kết quả · số tiền · lý do của thuật toán</p>
+          <h3 class="panel-title">★ ĐÃ CƯỢC · Lịch sử phiên</h3>
+          <p class="panel-subtitle">Phiên · cửa · kết quả · tiền cược · lãi/lỗ theo số dư thật</p>
         </div>
         <div class="history-tools">
           <span class="log-count" id="logCount">0 dòng</span>
@@ -1118,13 +1185,11 @@ body .site-foot,body .login-foot{color:#c3a995!important}
 <div id="walletModal" class="modal-shell" role="dialog" aria-modal="true" aria-labelledby="walletTitle">
   <section class="wallet-dialog">
     <header class="wallet-head">
-      <div><h2 id="walletTitle">Ví tài khoản</h2><p>Nạp tiền · Rút tiền · Lịch sử rút · Tài khoản</p></div>
+      <div><h2 id="walletTitle">Ví tài khoản</h2><p>Nạp tiền · Tài khoản</p></div>
       <button class="wallet-close" type="button" onclick="closeWallet()" aria-label="Đóng">×</button>
     </header>
     <nav class="wallet-tabs" aria-label="Chức năng ví">
       <button class="wallet-tab active" data-wallet-tab="deposit" type="button" onclick="walletTab('deposit')">Nạp tiền</button>
-      <button class="wallet-tab" data-wallet-tab="withdraw" type="button" onclick="walletTab('withdraw')">Rút tiền</button>
-      <button class="wallet-tab" data-wallet-tab="withdraw-history" type="button" onclick="walletTab('withdraw-history')">Lịch sử rút</button>
       <button class="wallet-tab" data-wallet-tab="account" type="button" onclick="walletTab('account')">Tài khoản</button>
     </nav>
     <div class="wallet-body">
@@ -1147,24 +1212,7 @@ body .site-foot,body .login-foot{color:#c3a995!important}
         </div>
         <div class="wallet-note">Chỉ chuyển khoản theo đúng số tiền và nội dung do cổng thanh toán trả về. Mã QR có thời hạn; hết hạn cần tạo lệnh mới. Không chuyển đến số tài khoản lấy từ nguồn bên ngoài.</div>
       </section>
-      <section class="wallet-pane" id="wallet-withdraw">
-        <div class="wallet-grid">
-          <div class="wallet-field"><label for="withdrawAmount">SỐ TIỀN MUỐN RÚT</label><input class="wallet-input money-entry" id="withdrawAmount" type="text" inputmode="numeric" autocomplete="off" placeholder="Chọn mệnh giá hợp lệ"></div>
-        </div>
-        <div class="amount-presets" id="withdrawPresets"></div>
-        <div class="account-mini" id="withdrawAccountHint">Đang kiểm tra tài khoản nhận đã liên kết…</div>
-        <div class="withdraw-hint" id="withdrawHint">Đang kiểm tra tài khoản nhận và mệnh giá rút.</div>
-        <button class="wallet-submit" id="withdrawSubmit" type="button" onclick="submitWithdraw()">GỬI YÊU CẦU RÚT TIỀN</button>
-        <div class="wallet-status" id="withdrawStatus"></div>
-        <div class="wallet-note">Yêu cầu rút sử dụng tài khoản ngân hàng đã liên kết và mệnh giá được LC79 cho phép.</div>
-      </section>
-      <section class="wallet-pane" id="wallet-withdraw-history">
-        <div class="activity-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
-          <div><strong>Lịch sử rút tiền</strong><div class="withdraw-hint">Giao dịch rút qua ngân hàng · 10 bản ghi gần nhất</div></div>
-          <button class="outline-button" type="button" onclick="loadWithdrawHistory()">↻ Làm mới</button>
-        </div>
-        <div id="withdrawHistoryList" class="withdraw-history-list"><div class="empty-activity">Mở mục này để tải lịch sử rút tiền.</div></div>
-      </section>
+      
       <section class="wallet-pane" id="wallet-account">
         <div class="account-info-grid">
           <div class="account-info-cell"><span>TÊN ĐĂNG NHẬP</span><strong id="accUsername">—</strong></div>
@@ -1303,10 +1351,7 @@ function showNextToast(){
   $("toasts").appendChild(t);
   toastTimer=setTimeout(()=>{if(t.parentNode)t.remove();toastBusy=false;toastTimer=null;setTimeout(showNextToast,850)},3000);
 }
-function syncModeHint(){
-  const v=$("mode").value;
-  $("modeHint").textContent=v==="antoan"?"An toàn ≥58%":v==="maohiem"?"Mạo hiểm · nghỉ ≤14/100":"Cân bằng ≥51%";
-}
+function syncModeHint(){ const el=$("modeHint"); if(el) el.textContent="API ngoài"; }
 function clearErr(){
   $("username").classList.remove("bad");$("password").classList.remove("bad");
   const us=$("userShell"),ps=$("passShell");
@@ -1426,11 +1471,11 @@ function renderHist(list){
 }
 function fillShared(s){
   if(!s) return;
-  $("bet").value=(s.base_bet||1000).toLocaleString("vi-VN");$("mode").value=s.mode||"canbang";
+  $("bet").value=(s.base_bet||1000).toLocaleString("vi-VN");
   $("sl").value=(s.stop_loss||0)?Number(s.stop_loss).toLocaleString("vi-VN"):"0";
   $("sw").value=(s.stop_win||0)?Number(s.stop_win).toLocaleString("vi-VN"):"0";
   $("limit").value=(s.daily_limit||0)?Number(s.daily_limit).toLocaleString("vi-VN"):"0";
-  $("mg").checked=!!s.martingale;$("mgmult").value=String(s.mg_mult||2);syncModeHint();
+  syncModeHint();
   const on=!!s.auto_any;
   $("autoPill").textContent=on?"AUTO ON":"AUTO OFF";
   $("autoPill").style.color=on?"var(--green)":"var(--muted)";
@@ -1477,9 +1522,8 @@ async function control(action){
     if($("pickTx")&&$("pickTx").checked) tables.push("tx");
     if(!tables.length){toast("Chọn ít nhất một bàn","err");return}
     if(action==="start"&&runButton){runButton.disabled=true;runButton.innerHTML='<span class="spin"></span> ĐANG NẠP LỊCH SỬ…';toast("Đang tải lịch sử phiên trước khi bật Auto","info")}
-    const body={tables,action,base_bet:parseMoney($("bet").value)||1000,mode:$("mode").value||"canbang",
-      stop_loss:parseMoney($("sl").value)||0,stop_win:parseMoney($("sw").value)||0,daily_limit:parseMoney($("limit").value)||0,
-      martingale:!!$("mg").checked,mg_mult:Number($("mgmult").value)||2};
+    const body={tables,action,base_bet:parseMoney($("bet").value)||1000,
+      stop_loss:parseMoney($("sl").value)||0,stop_win:parseMoney($("sw").value)||0,daily_limit:parseMoney($("limit").value)||0};
     const r=await api("/api/dashboard/control",{method:"POST",body:JSON.stringify(body)});
     toast(r.message||"Đã cập nhật", action==="stop"?"warn":"ok");
     await refresh();
