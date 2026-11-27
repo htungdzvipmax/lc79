@@ -259,17 +259,27 @@ def dashboard_login():
             st["access_token"] = res["access"]
             st["jwt"] = res["token"]
             st["nickname"] = res["nickname"]
-            # Đăng nhập chỉ xác thực tài khoản. Chỉ khi người dùng bấm BẬT AUTO
-            # mới nạp lịch sử phiên và khởi chạy WebSocket / vòng đồng bộ.
             st["running"] = False
             st["auto"] = False
             st["ws_connected"] = False
             st["pending"] = None
             st["last_open_sid"] = None
             st["session_id"] = None
-            st["engine"] = CauEngine()
+            st["engine"] = SessionStore()
+            st["bet_log"].clear()
+            st["total_win"] = 0
+            st["total_lose"] = 0
+            st["total_bet"] = 0
+            st["win_streak"] = 0
+            st["lose_streak"] = 0
+            st["mg_step"] = 0
+            st["day_bet"] = 0
             st["login_at"] = time.time()
             st["gen"] += 1
+            try:
+                persist_logs(cid, table, [])
+            except Exception:
+                pass
 
     token = create_web_session(username, res.get("nickname") or username, res.get("access"), res.get("token"), res.get("money"), password_md5=md5_hash(password))
     return jsonify({
@@ -326,8 +336,7 @@ def dashboard_status():
             "connected": bool(st.get("ws_connected")),
             "running": bool(st["running"]),
             "auto": bool(st["auto"]),
-            "mode": st["mode"],
-            "mode_label": MODES[st["mode"]]["label"],
+
             "balance": int(st.get("balance") or 0),
             "initial_balance": int(st.get("initial_balance") or 0),
             "profit": int(st.get("profit") or 0),
@@ -342,22 +351,23 @@ def dashboard_status():
             "accuracy": round(st["engine"].accuracy(), 2),
             "samples": len(st["engine"].perf),
             "history_count": len(st["engine"].recs),
-            "backtest_n": int(getattr(st["engine"], "backtest_n", 0)),
-            "backtest_hits": int(getattr(st["engine"], "backtest_hits", 0)),
-            "backtest_accuracy": round(float(getattr(st["engine"], "backtest_accuracy", 0.0)) * 100, 2),
-            "backtest_samples": int(getattr(st["engine"], "backtest_samples", 0)),
-            "backtest_baseline": round(float(getattr(st["engine"], "backtest_baseline", 0.0)) * 100, 2),
-            "backtest_edge": round(float(getattr(st["engine"], "backtest_edge", 0.0)) * 100, 2),
-            "backtest_coverage": round((getattr(st["engine"], "backtest_n", 0) / max(1, getattr(st["engine"], "backtest_samples", 0))) * 100, 2),
-            "algorithm": getattr(st["engine"], "VERSION", "TX-LITE"),
-            "algorithm_ready": bool(getattr(st["engine"], "validation_ready", False)),
+            "backtest_n": 0,
+            "backtest_hits": 0,
+            "backtest_accuracy": 0.0,
+            "backtest_samples": 0,
+            "backtest_baseline": 0.0,
+            "backtest_edge": 0.0,
+            "backtest_coverage": 0.0,
+            "algorithm": getattr(st["engine"], "VERSION", "EXTERNAL-API"),
+            "algorithm_ready": True,
+            "predict_api_configured": True,
             "last_result": st.get("last_result"),
             "recent": list(st["bet_log"])[-30:],
             "pending_reason": (st.get("pending") or {}).get("reason") or "",
             "pending_pred": (st.get("pending") or {}).get("pred"),
             "pending_sid": (st.get("pending") or {}).get("sid"),
             "logged_in": bool(st.get("access_token")),
-            "martingale": bool(st.get("martingale")),
+            "martingale": False,
             "mg_mult": float(st.get("mg_mult") or 2),
             "mg_step": int(st.get("mg_step") or 0),
             "current_bet": int(current_bet(st)),
@@ -377,11 +387,11 @@ def dashboard_status():
     st0 = get_state(cid, "md5")
     result["shared"] = {
         "base_bet": int(st0.get("base_bet") or 1000),
-        "mode": st0.get("mode") or DEFAULT_MODE,
+        "mode": "auto",
         "stop_loss": int(st0.get("stop_loss") or 0),
         "stop_win": int(st0.get("stop_win") or 0),
         "daily_limit": int(st0.get("daily_limit") or 0),
-        "martingale": bool(st0.get("martingale")),
+        "martingale": False,
         "mg_mult": float(st0.get("mg_mult") or 2),
         "auto_any": any(get_state(cid, t).get("auto") for t in ("md5", "tx")),
     }
@@ -418,10 +428,7 @@ def dashboard_control():
         for key in ("stop_loss", "stop_win", "daily_limit"):
             if key in data:
                 params[{"stop_loss": "sl", "stop_win": "sw", "daily_limit": "limit"}[key]] = str(data[key] or "0")
-        if "mode" in data:
-            params["mode"] = str(data["mode"])
         amount = data.get("base_bet")
-        martingale = data.get("martingale")
         mg_mult = data.get("mg_mult")
         messages = []
         for table in tables:
@@ -431,10 +438,6 @@ def dashboard_control():
                 if value <= 0:
                     raise ValueError("Mức cược phải lớn hơn 0")
                 st["base_bet"] = value
-            if martingale is not None:
-                st["martingale"] = bool(martingale) if not isinstance(martingale, str) else martingale.lower() in ("1", "true", "yes", "on")
-                if not st["martingale"]:
-                    st["mg_step"] = 0
             if mg_mult is not None:
                 try:
                     st["mg_mult"] = max(1.5, min(3.0, float(mg_mult)))
@@ -1075,26 +1078,6 @@ def dashboard_banks():
         return _lc79_upstream_error_response(exc)
 
 
-@app.route("/api/dashboard/withdraw-config", methods=["GET"])
-def dashboard_withdraw_config():
-    if not dashboard_authorized():
-        return _dashboard_session_invalid_response()
-    try:
-        _cid, _st, jwt, _access = _lc79_credentials()
-        raw = _lc79_request(
-            "POST", LC79_WLB + "/v1/lobby/payment-info/configuration", jwt, payload={}
-        )
-        denominations = _find_nested_value(raw, ("MENH_GIA_RUT_BANK",)) or []
-        minimum = _find_nested_value(raw, ("XUT_MIN_AMOUNT_CAN_WITHDRAW_BANK", "MIN_AMOUNT_CAN_WITHDRAW_BANK"))
-        if not isinstance(denominations, list):
-            denominations = []
-        denominations = sorted({n for n in (_parse_int_money(x, 0) for x in denominations) if n > 0})
-        min_amount = max(0, _parse_int_money(minimum, 0))
-        return jsonify({"ok": True, "denominations": denominations, "minimum": min_amount})
-    except Exception as exc:
-        log.warning("Withdraw config LC79 lỗi: %s", str(exc)[:160])
-        return _lc79_upstream_error_response(exc)
-
 
 @app.route("/api/dashboard/deposit", methods=["POST"])
 def dashboard_deposit():
@@ -1128,110 +1111,6 @@ def dashboard_deposit():
         log.warning("Cash-in LC79 lỗi: %s", str(exc)[:160])
         return _lc79_upstream_error_response(exc)
 
-
-@app.route("/api/dashboard/withdraw", methods=["POST"])
-def dashboard_withdraw():
-    if not dashboard_authorized():
-        return _dashboard_session_invalid_response()
-    data = request.get_json(silent=True) or {}
-    amount = _parse_int_money(data.get("amount"), 0)
-    bank_index = _parse_int_money(data.get("bank_index"), -1)
-    otp = str(data.get("otp") or "").strip()
-    if amount <= 0:
-        return jsonify({"error": "Số tiền rút phải lớn hơn 0"}), 400
-    try:
-        cid, st, jwt, _access = _lc79_credentials()
-        # Cash-out xác thực bằng JWT + tài khoản ngân hàng đã liên kết; không gọi security-info.
-        profile_raw = _lc79_request("GET", ACCOUNT_URL, jwt)
-        profile = _unwrap_dict(profile_raw)
-        banks_raw = _lc79_request(
-            "GET", LC79_WLB + "/v1/lobby/payment-info/list-bank/cashout", jwt
-        )
-        banks = _normalize_linked_banks(banks_raw)
-        if not banks:
-            return jsonify({"error": "Chưa có tài khoản nhận đã liên kết trong LC79. Hãy liên kết ngân hàng trong app game rồi thử lại."}), 409
-        bank = next((b for b in banks if int(b.get("index", -1)) == bank_index), None)
-        # Frontend dùng tài khoản mặc định (index 0); fallback nếu index gửi lên lệch.
-        if bank is None and len(banks) == 1:
-            bank = banks[0]
-        if bank is None and 0 <= bank_index < len(banks):
-            bank = banks[bank_index]
-        if bank is None:
-            bank = banks[0]
-        bank_code = bank["bankCode"]
-        account_number = bank["accountNumber"]
-        account_name = bank["accountName"]
-        if not bank_code or not account_number or not account_name:
-            return jsonify({"error": "Thông tin ngân hàng liên kết chưa đầy đủ"}), 409
-        config = _lc79_request(
-            "POST", LC79_WLB + "/v1/lobby/payment-info/configuration", jwt, payload={}
-        )
-        denominations = _find_nested_value(config, ("MENH_GIA_RUT_BANK",)) or []
-        minimum = _parse_int_money(_find_nested_value(config, ("XUT_MIN_AMOUNT_CAN_WITHDRAW_BANK", "MIN_AMOUNT_CAN_WITHDRAW_BANK")), 0)
-        if not isinstance(denominations, list):
-            denominations = []
-        allowed = {_parse_int_money(x, 0) for x in denominations}
-        allowed.discard(0)
-        if not allowed:
-            return jsonify({"error": "Chưa tải được danh sách mệnh giá rút hợp lệ từ LC79; chưa gửi lệnh rút"}), 409
-        if amount not in allowed:
-            return jsonify({"error": "Số tiền không nằm trong mệnh giá rút được phép: " + ", ".join(f"{x:,}" for x in sorted(allowed)[:12])}), 400
-        minimum = max(0, int(minimum or 0))
-        if minimum and amount < minimum:
-            return jsonify({"error": f"Số tiền rút tối thiểu là {minimum:,}đ"}), 400
-        current = _parse_int_money(profile.get("balance"), None)
-        if current is None:
-            current = fetch_account_balance(st.get("access_token"), jwt)
-        if current is None:
-            return jsonify({"error": "Không xác minh được số dư hiện tại, chưa gửi lệnh rút"}), 409
-        if amount > current:
-            return jsonify({"error": f"Số dư không đủ. Hiện có {current:,}đ"}), 409
-        payload = {"amount": amount, "name": account_name.upper(), "number": account_number,
-                   "otp": otp, "type": bank_code.upper()}
-        raw = _lc79_request(
-            "POST", LC79_GAMEAPI + "/v1/payment-app/cash-out/bank", jwt, payload=payload
-        )
-        success = isinstance(raw, dict) and (raw.get("code") in (0, "0") or raw.get("success") is True)
-        if not success:
-            msg = raw.get("message") if isinstance(raw, dict) else None
-            return jsonify({"error": str(msg or "Nhà cung cấp từ chối lệnh rút")[:220]}), 502
-        return jsonify({"ok": True, "message": "Đã gửi yêu cầu rút tiền đến LC79", "amount": amount,
-                        "bank": bank_code, "account": account_number[-4:].rjust(len(account_number), "•")})
-    except Exception as exc:
-        log.warning("Cash-out LC79 lỗi: %s", str(exc)[:160])
-        return _lc79_upstream_error_response(exc)
-
-
-
-@app.route("/api/dashboard/withdraw-history", methods=["GET"])
-def dashboard_withdraw_history():
-    """Lịch sử rút tiền riêng: dùng wsslot transaction/history, không trộn activity history."""
-    if not dashboard_authorized():
-        return _dashboard_session_invalid_response()
-    try:
-        _cid, _st, jwt, _access = _lc79_credentials()
-        limit = max(1, min(_parse_int_money(request.args.get("limit"), 10), 50))
-        raw = _lc79_request(
-            "GET", "https://wsslot.tele68.com/v1/lobby/transaction/history", jwt,
-            params={"limit": limit, "channel_id": 2, "type": "WITHDRAW"},
-        )
-        rows = _unwrap_list(raw)
-        items = []
-        for row in rows[:limit]:
-            if not isinstance(row, dict):
-                continue
-            items.append({
-                "id": str(row.get("id") or ""),
-                "status": str(row.get("status") or "Đang xử lý"),
-                "amount": _parse_int_money(row.get("amount"), 0),
-                "dateTime": str(row.get("dateTime") or ""),
-                "reason": str(row.get("reason") or ""),
-                "content": str(row.get("content") or ""),
-            })
-        return jsonify({"ok": True, "items": items, "count": len(items)})
-    except Exception as exc:
-        log.warning("Withdraw history LC79 lỗi: %s", str(exc)[:160])
-        return _lc79_upstream_error_response(exc)
 
 
 def run_web():
@@ -1278,28 +1157,24 @@ SYNC_INTERVAL = max(5, int(os.environ.get("LC79_SYNC_INTERVAL", "15")))
 
 ACCOUNT_URL = "https://wlb.tele68.com/v1/minigame/user/detail-info"
 
-# Tạm dừng khi dữ liệu/các mô hình bất đồng, sau đó có nhịp hoạt động trở lại.
-MAX_PAUSE_SESSIONS = 3
-PAUSE_SESSIONS = 2
-ACTIVE_SESSIONS_AFTER_PAUSE = 3
-
-# Tỷ lệ trả thưởng: thắng lãi 1.98 lần cược, thua mất 1 lần cược.
+# Tỷ lệ trả thưởng tham chiếu (chỉ dùng log/hiển thị).
 WIN_PROFIT = 1.98
 LOSE_LOSS = 1.0
-# Tỷ lệ thắng tối thiểu để cược có lợi về lâu dài: p * W - (1 - p) * L > 0.
-BREAK_EVEN = LOSE_LOSS / (LOSE_LOSS + WIN_PROFIT)
 
 TAI, XIU = "TAI", "XIU"
 
-MODES = {
-    "canbang": {"label": "Cân bằng", "post": 0.555, "min_sessions": 100, "p_side_min": 0.555},
-    "antoan": {"label": "An toàn", "post": 0.585, "min_sessions": 150, "p_side_min": 0.585},
-    "maohiem": {"label": "Mạo hiểm có kiểm soát", "post": 0.545, "min_sessions": 100, "p_side_min": 0.545, "aggressive": False},
-}
-DEFAULT_MODE = "canbang"
-MAX_SKIPS_PER_100 = 12
-LOSS_STREAK_PAUSE = 4
-LOSS_RECOVERY_P = 0.54
+# API dự đoán ngoài theo bàn (không nạp phiên nội bộ để dự đoán).
+# TX thường / hũ TX:
+PREDICT_API_TX = os.environ.get("PREDICT_API_TX", "https://kftxiphcytt.onrender.com/lc79/tx").strip()
+# TX MD5:
+PREDICT_API_MD5 = os.environ.get("PREDICT_API_MD5", "https://kftxiphcytt.onrender.com/lc79/md5").strip()
+PREDICT_TIMEOUT = max(3, min(int(os.environ.get("PREDICT_TIMEOUT", "8")), 20))
+
+def predict_url_for(table):
+    table = normalize_table(table) or DEFAULT_TABLE
+    if table == "tx":
+        return PREDICT_API_TX
+    return PREDICT_API_MD5
 
 state_lock = threading.RLock()
 active_sockets = {}  # khóa (chat_id, table_key)
@@ -1404,37 +1279,21 @@ def side_label(side):
 
 
 # ============================================================
-# TX-LITE 2.1 — Bayes + Markov + Trend/Mean-Reversion + Break
-# Tích hợp trực tiếp trong file server chính (không import module rời).
-# Đây là bộ phân tích lịch sử, không tạo lợi thế chắc chắn trên xúc xắc ngẫu nhiên.
+# DỰ ĐOÁN TỪ API NGOÀI (theo bàn) — không nạp phiên để dự đoán
+# API: /lc79/tx  và  /lc79/md5  (mảng JSON như ảnh)
 # ============================================================
-class CauEngine:
-    VERSION = "TX-LITE 2.1"
-    MIN_HISTORY = 100
-    MAX_MODEL_HISTORY = 500
-    BACKTEST_WINDOW = 800
-    BACKTEST_TRAIN = 100
+class SessionStore:
+    """Chỉ đếm độ chính xác sau khi cược — không phân tích lịch sử."""
+    VERSION = "EXTERNAL-API"
 
     def __init__(self):
         self.recs = {}
-        self.perf = deque(maxlen=120)
-        self.skips = 0
-        self.pause_events = 0
-        self.validation_ready = False
-        self.backtest_n = 0              # số tín hiệu walk-forward có phát ra
-        self.backtest_hits = 0
-        self.backtest_samples = 0        # tổng số mẫu kiểm thử, gồm cả NO_SIGNAL
-        self.backtest_accuracy = 0.0
-        self.backtest_baseline = 0.0
-        self.backtest_edge = 0.0
-        self._last_backtest_len = 0
+        self.perf = deque(maxlen=200)
         self.last_info = {}
+        self.validation_ready = True
 
     def results(self):
         return [v[0] for v in self.recs.values()]
-
-    def dices(self):
-        return [v[2] if len(v) > 2 else [] for v in self.recs.values()]
 
     def ingest(self, records):
         added = 0
@@ -1444,311 +1303,138 @@ class CauEngine:
                 continue
             self.recs[sid] = (res, rec.get("total", 0), rec.get("dice") or [])
             added += 1
-        if added:
-            ordered = sorted(self.recs.items(), key=lambda kv: sid_sort_key(kv[0]))[-MAX_HISTORY:]
-            self.recs = dict(ordered)
-            # Backtest được tính lại theo lô để tránh tốn CPU trên mỗi lần poll.
-            if self._last_backtest_len == 0 or len(ordered) - self._last_backtest_len >= 5:
-                self._quick_backtest(ordered)
         return added
-
-    @staticmethod
-    def _streak(seq):
-        if not seq:
-            return 0, None
-        last = seq[-1]
-        n = 1
-        for value in reversed(seq[:-1]):
-            if value != last:
-                break
-            n += 1
-        return n, last
-
-    @staticmethod
-    def _entropy(p):
-        if p <= 0 or p >= 1:
-            return 0.0
-        return -(p * math.log2(p) + (1 - p) * math.log2(1 - p))
-
-    @staticmethod
-    def _clip(value, low=0.30, high=0.70):
-        return max(low, min(high, float(value)))
-
-    @staticmethod
-    def _regime(seq):
-        win = seq[-30:]
-        if len(win) < 15:
-            return "normal", {"entropy": 1.0, "volatility": 0.5, "trend": 0.0}
-        n = len(win)
-        p_t = sum(1 for x in win if x == TAI) / n
-        entropy = CauEngine._entropy(p_t)
-        changes = sum(1 for i in range(1, n) if win[i] != win[i - 1])
-        vol = changes / max(1, n - 1)
-        trend = abs(2 * p_t - 1)
-        if vol >= 0.76:
-            regime = "volatile"
-        elif trend >= 0.38 and vol <= 0.72:
-            regime = "trending"
-        elif entropy >= 0.975 and trend <= 0.22:
-            regime = "random"
-        else:
-            regime = "normal"
-        return regime, {"entropy": entropy, "volatility": vol, "trend": trend}
-
-    @staticmethod
-    def _bayes(seq):
-        # Beta(2,2) prior, giới hạn ở 500 phiên gần nhất.
-        win = seq[-500:]
-        n = len(win)
-        tai = sum(1 for x in win if x == TAI)
-        return (tai + 2.0) / (n + 4.0)
-
-    @staticmethod
-    def _markov(seq):
-        if len(seq) < 2:
-            return 0.5, 0
-        win = seq[-501:]
-        previous = win[-1]
-        samples = 0
-        tai_next = 0
-        for i in range(1, len(win)):
-            if win[i - 1] == previous:
-                samples += 1
-                if win[i] == TAI:
-                    tai_next += 1
-        if samples == 0:
-            return 0.5, 0
-        posterior = (tai_next + 1.5) / (samples + 3.0)
-        # Shrink khi số lần quan sát trạng thái trước còn ít.
-        reliability = samples / (samples + 12.0)
-        return 0.5 + (posterior - 0.5) * reliability, samples
-
-    @staticmethod
-    def _trend_mean_reversion(seq):
-        short = seq[-12:]
-        long_ = seq[-30:]
-        p_short = (sum(1 for x in short if x == TAI) + 2.0) / (len(short) + 4.0)
-        p_long = (sum(1 for x in long_ if x == TAI) + 2.0) / (len(long_) + 4.0)
-        # Thu hẹp biên độ để không biến tần suất quá khứ thành xác suất chắc chắn.
-        p = 0.5 + (p_short - 0.5) * 0.42 + (p_long - 0.5) * 0.28
-        streak, last = CauEngine._streak(seq)
-        # Mean reversion chỉ điều chỉnh nhẹ khi lệch mạnh và kéo dài.
-        if streak >= 6:
-            direction = 1 if last == TAI else -1
-            strength = min(0.12, (streak - 5) * 0.018)
-            p -= direction * strength
-            reason = f"streak-adjust-{streak}"
-        elif abs(p_short - 0.5) >= 0.18 and (p_short - 0.5) * (p_long - 0.5) < 0:
-            p = 0.5 + (p - 0.5) * 0.75
-            reason = "short-long-conflict"
-        else:
-            reason = "trend-window"
-        return CauEngine._clip(p), reason
-
-    @staticmethod
-    def _break_probability(seq):
-        current_streak, last = CauEngine._streak(seq)
-        if current_streak < 5:
-            return 0.5, 0, last, current_streak
-        # Ước lượng xác suất đảo ở đúng độ dài streak hiện tại (cap 9),
-        # chỉ dùng các lần lịch sử có cùng độ dài streak trước kết quả kế tiếp.
-        bucket = min(current_streak, 9)
-        run = 1
-        samples = breaks = 0
-        for i in range(1, len(seq)):
-            if run == bucket:
-                samples += 1
-                if seq[i] != seq[i - 1]:
-                    breaks += 1
-            if seq[i] == seq[i - 1]:
-                run += 1
-            else:
-                run = 1
-        if samples == 0:
-            return 0.5, 0, last, current_streak
-        posterior = (breaks + 1.5) / (samples + 3.0)
-        reliability = samples / (samples + 14.0)
-        return 0.5 + (posterior - 0.5) * reliability, samples, last, current_streak
-
-    @staticmethod
-    def _mode_config(mode):
-        # Không mode nào được bỏ qua điều kiện lịch sử tối thiểu hay phát sinh dự đoán random.
-        return {
-            "canbang": {"min_history": 100, "min_side": 0.555, "min_edge": 0.055, "min_agree": 2},
-            "antoan":  {"min_history": 150, "min_side": 0.585, "min_edge": 0.085, "min_agree": 2},
-            "maohiem": {"min_history": 100, "min_side": 0.545, "min_edge": 0.045, "min_agree": 2},
-        }.get(mode, {"min_history": 100, "min_side": 0.555, "min_edge": 0.055, "min_agree": 2})
-
-    def _analyze(self, source_seq, mode=DEFAULT_MODE):
-        seq = source_seq[-self.MAX_MODEL_HISTORY:]
-        n = len(seq)
-        cfg = self._mode_config(mode)
-        if n < cfg["min_history"]:
-            return self._no_signal(0.5, f"Cần thêm dữ liệu ({n}/{cfg['min_history']} phiên)", n)
-
-        p_bayes = self._bayes(seq)
-        p_markov, markov_n = self._markov(seq)
-        p_trend, trend_reason = self._trend_mean_reversion(seq)
-        p_break, break_n, last, streak = self._break_probability(seq)
-        regime, features = self._regime(seq)
-
-        # Khi Markov có đủ mẫu và lệch mạnh, tăng trọng số có kiểm soát.
-        # Tránh để tần suất toàn cục làm chìm tín hiệu chuyển trạng thái rõ ràng.
-        markov_dominant = (markov_n >= 40 and abs(p_markov - 0.5) >= 0.14
-                           and abs(p_trend - 0.5) <= 0.10)
-        if markov_dominant:
-            weights = (0.25, 0.55, 0.20)
-        elif regime == "trending":
-            weights = (0.22, 0.38, 0.40)
-        elif regime == "volatile":
-            weights = (0.48, 0.34, 0.18)
-        elif regime == "random":
-            weights = (0.50, 0.30, 0.20)
-        else:
-            weights = (0.34, 0.38, 0.28)
-        p_tai = sum(w * p for w, p in zip(weights, (p_bayes, p_markov, p_trend)))
-
-        # Chỉ sử dụng bộ bẻ cầu khi streak >=5, có ít nhất 8 mẫu lịch sử
-        # và xác suất đảo đã lệch rõ khỏi 50/50.
-        p_break_tai = (1.0 - p_break) if last == TAI else p_break
-        if streak >= 5 and break_n >= 8 and p_break >= 0.62:
-            break_weight = min(0.32, 0.32 * break_n / (break_n + 18.0))
-            p_tai = (1.0 - break_weight) * p_tai + break_weight * p_break_tai
-
-        p_tai = self._clip(p_tai, 0.25, 0.75)
-        side = TAI if p_tai >= 0.5 else XIU
-        p_side = p_tai if side == TAI else 1.0 - p_tai
-        edge = p_side - 0.5
-
-        # Đồng thuận có trọng số: chỉ tính model thực sự lệch khỏi 50/50.
-        votes = []
-        for name, value in (("bayes", p_bayes), ("markov", p_markov), ("trend", p_trend)):
-            if abs(value - 0.5) >= 0.012:
-                votes.append((name, TAI if value > 0.5 else XIU))
-        if streak >= 5 and break_n >= 8 and abs(p_break - 0.5) >= 0.10:
-            votes.append(("break", TAI if p_break_tai > 0.5 else XIU))
-        agree = sum(1 for _name, vote in votes if vote == side)
-
-        reason_bits = [f"regime={regime}", f"đồng thuận={agree}/{len(votes)}", f"edge={edge:.1%}"]
-        if trend_reason:
-            reason_bits.append(trend_reason)
-        reason = " · ".join(reason_bits)
-        experts = {
-            "bayes_tai": round(p_bayes, 4),
-            "markov_tai": round(p_markov, 4),
-            "trend_tai": round(p_trend, 4),
-            "break_tai": round(p_break_tai, 4),
-            "markov_samples": markov_n,
-            "break_samples": break_n,
-            "regime": regime,
-            "entropy": round(features["entropy"], 4),
-            "volatility": round(features["volatility"], 4),
-            "agreement": agree,
-            "markov_dominant": markov_dominant,
-        }
-        strat = {"model": self.VERSION, "regime": regime, "agreement": agree,
-                 "markov_dominant": markov_dominant, "trend_reason": trend_reason,
-                 "streak": streak, "weights": weights}
-
-        if regime == "random":
-            return self._no_signal(p_tai, "Chế độ lịch sử gần đây giống ngẫu nhiên; bỏ qua phiên", n, experts, strat)
-        if regime == "volatile" and edge < cfg["min_edge"] + 0.04:
-            return self._no_signal(p_tai, "Biến động đảo chiều cao; tín hiệu chưa đủ mạnh", n, experts, strat)
-        if edge < cfg["min_edge"] or p_side < cfg["min_side"]:
-            return self._no_signal(p_tai, f"Chưa đủ chắc ({p_side:.1%}); chưa đạt ngưỡng {cfg['min_side']:.1%}", n, experts, strat)
-        if agree < cfg["min_agree"] and not markov_dominant:
-            return self._no_signal(p_tai, f"Các mô hình chưa đồng thuận ({agree}/{len(votes)})", n, experts, strat)
-
-        return {"side": side, "p": round(p_side, 4), "p_tai": round(p_tai, 4),
-                "reason": reason, "ctx": f"{regime} · Bayes/Markov/Trend/Break",
-                "experts": experts, "strat": strat, "signal": True, "n": n}
-
-    @staticmethod
-    def _no_signal(p_tai, reason, n, experts=None, strat=None):
-        p_side = max(p_tai, 1.0 - p_tai)
-        return {"side": None, "p": round(p_side, 4), "p_tai": round(p_tai, 4),
-                "reason": reason, "ctx": "NO_SIGNAL", "experts": experts or {},
-                "strat": strat or {"model": "TX-LITE 2.1"}, "signal": False, "n": n}
-
-    def _quick_backtest(self, ordered, max_samples=BACKTEST_WINDOW):
-        seq = [row[0] for _sid, row in ordered]
-        if len(seq) < self.BACKTEST_TRAIN + 20:
-            self.backtest_n = self.backtest_hits = self.backtest_samples = 0
-            self.backtest_accuracy = self.backtest_baseline = self.backtest_edge = 0.0
-            self.validation_ready = False
-            self._last_backtest_len = len(seq)
-            return
-        start = max(self.BACKTEST_TRAIN, len(seq) - max_samples)
-        signals = hits = samples = tai_actual = 0
-        for i in range(start, len(seq)):
-            train = seq[max(0, i - self.MAX_MODEL_HISTORY):i]
-            outcome = seq[i]
-            samples += 1
-            if outcome == TAI:
-                tai_actual += 1
-            pred = self._analyze(train, "canbang")
-            side = pred.get("side")
-            if side not in (TAI, XIU):
-                continue
-            signals += 1
-            if side == outcome:
-                hits += 1
-        self.backtest_n = signals
-        self.backtest_hits = hits
-        self.backtest_samples = samples
-        self.backtest_accuracy = (hits / signals) if signals else 0.0
-        baseline = max(tai_actual / samples, 1.0 - tai_actual / samples) if samples else 0.0
-        self.backtest_baseline = baseline
-        self.backtest_edge = self.backtest_accuracy - baseline if signals else 0.0
-        self.validation_ready = signals >= 30
-        self._last_backtest_len = len(seq)
-
-    def predict(self, mode=DEFAULT_MODE):
-        result = self._analyze(self.results(), mode)
-        # Kiểm định walk-forward phải tốt hơn baseline trước khi cho phép tín hiệu live.
-        # Nếu số tín hiệu kiểm thử đã đủ mà không vượt baseline tối thiểu 1 điểm %, thì nghỉ.
-        if (result.get("side") is not None and self.backtest_n >= 30
-                and self.backtest_edge <= 0.01):
-            result = self._no_signal(
-                result.get("p_tai", 0.5),
-                f"Walk-forward chưa vượt baseline ({self.backtest_edge:+.1%}); tạm bỏ qua",
-                result.get("n", len(self.recs)), result.get("experts"), result.get("strat")
-            )
-        if result.get("side") is None:
-            self.skips += 1
-        self.last_info = result
-        return result
-
-    def learn(self, experts_p, p_tai, actual):
-        # Không tự tối ưu trọng số trên một số ít kết quả gần nhất để tránh overfit.
-        return
 
     def record(self, pred, p_side, actual):
         if pred not in (TAI, XIU) or actual not in (TAI, XIU):
             return
         self.perf.append((pred, actual, max(0.01, min(0.99, float(p_side or 0.5)))))
 
-    def record_shadow(self, strat, actual):
-        return
-
     def accuracy(self):
         if not self.perf:
             return 0.0
         return sum(1 for pred, actual, _p in self.perf if pred == actual) / len(self.perf) * 100.0
 
-    def logloss(self):
-        if not self.perf:
-            return None
-        total = 0.0
-        for pred, actual, prob in self.perf:
-            total -= math.log(prob if pred == actual else (1.0 - prob))
-        return total / len(self.perf)
 
-    def expected_roi(self):
-        # Chỉ là ước tính theo tỷ lệ payout cấu hình, không phải cam kết lợi nhuận.
-        if not self.perf:
-            return 0.0
-        return sum(p * WIN_PROFIT - (1.0 - p) * LOSE_LOSS for _pred, _actual, p in self.perf) / len(self.perf)
+def _normalize_side_label(value):
+    value = norm(str(value or "")).upper().replace(" ", "")
+    if value in ("TAI", "TÀI", "BIG", "OVER", "HIGH"):
+        return TAI
+    if value in ("XIU", "XỈU", "SMALL", "UNDER", "LOW"):
+        return XIU
+    return None
+
+
+def _parse_confidence(raw):
+    if raw is None:
+        return 0.5
+    s = str(raw).strip().replace("%", "").replace(",", ".")
+    try:
+        val = float(s)
+        if val > 1.0:
+            val = val / 100.0
+        return max(0.01, min(0.99, val))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def fetch_external_prediction(table=DEFAULT_TABLE, current_sid=None):
+    """Gọi API dự đoán theo bàn. Trả dict tín hiệu hoặc None.
+
+    Response mẫu (mảng):
+      [{"phien":..., "ket_qua":"Tài", "phien_du_doan":..., "du_doan":"Xỉu",
+        "do_tin_cay":"50%", "pattern":"...", "icon":"⏳"}, ...]
+    Ưu tiên item icon ⏳ (phiên đang dự đoán), rồi khớp phien_du_doan, rồi phần tử đầu.
+    """
+    url = predict_url_for(table)
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=PREDICT_TIMEOUT, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+        })
+        if resp.status_code != 200:
+            log.warning("Predict API HTTP %s %s", resp.status_code, url)
+            return None
+        data = resp.json()
+        items = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        if not items:
+            return None
+
+        chosen = None
+        # 1) icon đang chờ
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            icon = str(it.get("icon") or "")
+            if "⏳" in icon or "hourglass" in icon.lower() or icon.strip() in ("⏳", "⌛"):
+                chosen = it
+                break
+        # 2) khớp phiên
+        if chosen is None and current_sid is not None:
+            sid_s = str(current_sid)
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if str(it.get("phien_du_doan") or it.get("phien") or "") == sid_s:
+                    chosen = it
+                    break
+        # 3) phần tử đầu
+        if chosen is None:
+            for it in items:
+                if isinstance(it, dict):
+                    chosen = it
+                    break
+        if not chosen:
+            return None
+
+        side = _normalize_side_label(chosen.get("du_doan") or chosen.get("prediction") or chosen.get("side"))
+        if side is None:
+            return None
+
+        p_side = _parse_confidence(chosen.get("do_tin_cay") or chosen.get("tin_cay") or chosen.get("confidence"))
+        pattern = str(chosen.get("pattern") or "").strip()
+        pred_sid = chosen.get("phien_du_doan") or chosen.get("phien") or current_sid
+        reason = pattern or f"API · tin_cay={p_side:.0%}"
+
+        return {
+            "side": side,
+            "p": round(p_side, 4),
+            "p_tai": round(p_side if side == TAI else 1.0 - p_side, 4),
+            "experts": {"external": p_side},
+            "strat": {"model": "EXTERNAL-API", "pred_sid": pred_sid, "pattern": pattern},
+            "reason": reason,
+            "signal": True,
+            "n": 0,
+            "ctx": reason,
+            "raw": chosen,
+        }
+    except requests.Timeout:
+        log.warning("Predict API timeout %s", url)
+        return None
+    except Exception as exc:
+        log.warning("Predict API lỗi: %s", str(exc)[:140])
+        return None
+
+
+def external_predict_or_skip(st, table, current_sid=None):
+    """Lấy du_doan từ API ngoài. Có tín hiệu thì cược; không có thì bỏ qua (không thông báo rác)."""
+    url = predict_url_for(table)
+    if not url:
+        return {
+            "side": None, "p": 0.5, "p_tai": 0.5,
+            "experts": {}, "strat": {"model": "EXTERNAL-API"},
+            "reason": "", "signal": False, "n": 0, "ctx": "no_api",
+        }
+    info = fetch_external_prediction(table, current_sid)
+    if info is None or not info.get("side"):
+        return {
+            "side": None, "p": 0.5, "p_tai": 0.5,
+            "experts": {}, "strat": {"model": "EXTERNAL-API"},
+            "reason": "", "signal": False, "n": 0, "ctx": "api_empty",
+        }
+    return info
 
 
 # ============================================================
@@ -1812,10 +1498,10 @@ def format_history_txt(rows, table):
 
 def new_state(table="md5"):
     return {
-        "table": table, "engine": CauEngine(), "running": False, "gen": 0,
+        "table": table, "engine": SessionStore(), "running": False, "gen": 0,
         "auto": False,
-        "base_bet": 1000, "mode": DEFAULT_MODE, "notify": True,
-        "martingale": False, "mg_mult": 2.0, "mg_step": 0,
+        "base_bet": 1000, "mode": "auto", "notify": False,
+        "martingale": False, "mg_mult": 1.5, "mg_step": 0,
         "stop_loss": 0, "stop_win": 0, "daily_limit": 0,
         "day": vn_now().strftime("%Y-%m-%d"), "day_bet": 0,
         "session_id": None, "last_open_sid": None, "pending": None, "last_result": None,
@@ -1844,22 +1530,27 @@ def get_state(cid, table=DEFAULT_TABLE):
 
 
 def current_bet(st):
+    """Vốn gốc + tự tăng khi thắng 2 phiên liên tiếp (x1.5 → x2). Không gấp thếp."""
     base = int(st.get("base_bet") or 0)
-    if not st.get("martingale"):
-        return base
-    step = int(st.get("mg_step") or 0)
-    mult = float(st.get("mg_mult") or 2)
-    if step <= 0:
-        return base
-    # Gấp thếp: base * mult^step, trần 20 lần base
-    amt = int(round(base * (mult ** step)))
-    return min(amt, base * 20)
+    if base <= 0:
+        return 0
+    wins = int(st.get("win_streak") or 0)
+    if wins >= 3:
+        # Thắng ≥3 tay liên tiếp: x2 vốn gốc
+        return int(round(base * 2.0))
+    if wins >= 2:
+        # Thắng 2 tay: x1.5 vốn gốc
+        return int(round(base * 1.5))
+    return base
 
 
 def risk_block(st, amount):
     today = vn_now().strftime("%Y-%m-%d")
     if st["day"] != today:
         st["day"], st["day_bet"] = today, 0
+    # Sai ≥3 tay liên tiếp trên bàn này → tự dừng bàn
+    if int(st.get("lose_streak") or 0) >= 3:
+        return "Sai 3 tay liên tiếp · tự dừng bàn"
     if st["stop_loss"] and st["profit"] <= -st["stop_loss"]:
         return "Đã chạm mức dừng lỗ"
     if st["stop_win"] and st["profit"] >= st["stop_win"]:
@@ -1872,34 +1563,25 @@ def risk_block(st, amount):
 
 
 def _apply_auto_settings(st, params):
-    """Áp dụng mode / stop-loss / stop-win / daily limit từ web."""
+    """Áp dụng stop-loss / stop-win / daily limit từ web."""
     params = params or {}
-    if "mode" in params:
-        mode = norm(str(params["mode"]))
-        if mode in MODES:
-            st["mode"] = mode
-        else:
-            raise ValueError("mode nhận antoan, canbang hoặc maohiem")
     for src, dst in (("sl", "stop_loss"), ("sw", "stop_win"), ("limit", "daily_limit")):
         if src in params and str(params[src]).strip() != "":
             st[dst] = parse_amount(str(params[src]))
 
 
 def start_table_runtime(cid, table):
-    """Chỉ nạp lịch sử và kết nối bàn khi người dùng chủ động bật Auto."""
+    """Kết nối bàn khi bật Auto — dự đoán lấy từ API ngoài, không nạp phiên nội bộ."""
     table = normalize_table(table) or DEFAULT_TABLE
     st = get_state(cid, table)
     if st.get("running"):
-        return True, "Bàn đã được khởi chạy"
+        return True, "Bàn đã chạy"
     token = str(st.get("jwt") or "").strip()
     if not token:
         return False, "Chưa có phiên đăng nhập LC79"
-    records = fetch_history_from_api(table, MAX_HISTORY)
-    if not records:
-        return False, f"Không nạp được lịch sử {TABLES[table]['label']}; chưa bật Auto để tránh dự đoán khi thiếu dữ liệu"
+    if not predict_url_for(table):
+        return False, "Chưa cấu hình API dự đoán"
     with state_lock:
-        st["engine"].ingest(records)
-        st["poll_last_id"] = records[-1].get("session")
         st["login_at"] = time.time()
         st["running"] = True
         st["ws_connected"] = False
@@ -1907,8 +1589,7 @@ def start_table_runtime(cid, table):
         generation = st["gen"]
     threading.Thread(target=start_websocket, args=(cid, token, table), daemon=True).start()
     threading.Thread(target=sync_loop, args=(cid, table, generation), daemon=True).start()
-    push_event(cid, f"Đã nạp lịch sử {TABLES[table]['label']}", f"{len(records)} phiên · đang kết nối bàn", "info")
-    return True, f"Đã nạp {len(records)} phiên {TABLES[table]['label']} · đang kết nối"
+    return True, f"Đã bật {TABLES[table]['label']}"
 
 
 def _set_auto(cid, table, enabled, amount=None, params=None):
@@ -1948,11 +1629,9 @@ def _set_auto(cid, table, enabled, amount=None, params=None):
                 stop_user(cid, table)
             return False, block
         st["auto"] = True
-        push_event(cid, f"Auto {TABLES[table]['label']}", f"BẬT · {fmt(st['base_bet'])} · {MODES[st['mode']]['label']}", "ok")
-        return True, f"Đã bật {TABLES[table]['label']} · {fmt(st['base_bet'])} · {MODES[st['mode']]['label']}"
+        return True, f"Đã bật {TABLES[table]['label']} · {fmt(st['base_bet'])}"
     st["auto"] = False
-    push_event(cid, f"Auto {TABLES[table]['label']}", "ĐÃ TẮT", "warn")
-    return True, f"Đã tắt Auto {TABLES[table]['label']}"
+    return True, f"Đã tắt {TABLES[table]['label']}"
 
 
 def apply_shared_balance(st, balance):
@@ -2286,30 +1965,9 @@ def login_and_get_token(u, p):
 # CHỐT PHIÊN, CƯỢC, WEBSOCKET
 # ============================================================
 def explain_round_reason(info, st):
-    """Chuyển lý do kỹ thuật thành giải thích dễ hiểu cho người dùng."""
-    raw = str(info.get("reason") or "").strip()
-    context = str(info.get("ctx") or "").strip()
-    mode_label = MODES.get(st.get("mode"), MODES[DEFAULT_MODE])["label"]
-    if raw.startswith("Cần thêm dữ liệu"):
-        return raw + ". Hệ thống cần thêm kết quả lịch sử để các mô hình có đủ mẫu kiểm chứng trước khi đặt cược."
-    if raw.startswith("Chưa đủ chắc"):
-        return f"Tín hiệu hiện tại chưa đạt ngưỡng của chế độ {mode_label}; hệ thống bỏ qua phiên này để tránh đặt cược khi lợi thế chưa rõ. Tín hiệu tham chiếu: {context or 'các mô hình đang phân tích lịch sử'}."
-    if "Khung 0h-5h" in raw:
-        return "Đang trong khung giờ hệ thống hạn chế áp dụng công thức; phiên này được bỏ qua để tránh dùng tín hiệu kém ổn định."
-    if raw.startswith("Thua ") and "tay" in raw:
-        count = raw.split("tay", 1)[0].replace("Thua", "").strip()
-        return f"Tài khoản vừa có chuỗi thua {count} tay; hệ thống tạm siết điều kiện và chờ tín hiệu rõ hơn trước khi cược tiếp."
-    if "tạm nghỉ" in raw.lower() or "cầu khó" in raw.lower():
-        return raw + ". Đây là khoảng nghỉ bảo vệ sau chuỗi tín hiệu khó; hệ thống chờ thêm kết quả mới trước khi đặt tiếp."
-    if "Hết suất nghỉ" in raw:
-        return raw + ". Ngân sách bỏ qua phiên trong cửa sổ gần đây đã dùng hết; cần chú ý quản trị rủi ro."
-    if raw:
-        return raw + (f". Tín hiệu chính: {context}." if context and context not in raw else "")
-    if context and "Chưa cách nào vượt ngẫu nhiên" in context:
-        return "Chưa có chiến lược riêng nào vượt kiểm định thống kê đủ rõ; mô hình kết hợp các tín hiệu lịch sử và chỉ đặt khi điều kiện chế độ cho phép."
-    if context:
-        return f"Tín hiệu tham chiếu từ mô hình: {context}. Hướng chọn được tính từ dữ liệu phiên đã nạp, không phải cam kết kết quả."
-    return "Hệ thống chưa có lý do chi tiết cho phiên này; nên chờ thêm dữ liệu kiểm chứng."
+    """Lý do ngắn gọn từ API dự đoán."""
+    raw = str((info or {}).get("reason") or "").strip()
+    return raw
 
 
 def open_round(cid, sid, table=DEFAULT_TABLE):
@@ -2327,16 +1985,10 @@ def open_round(cid, sid, table=DEFAULT_TABLE):
         if not st.get("auto"):
             st["pending"] = None
             return None
-        info = st["engine"].predict(st["mode"])
-        p_side = float(info.get("p") or 0.5)  # xác suất/độ lệch của chính cửa đã chọn
-        # Thua ≥3 tay liên tiếp → tạm dừng, chỉ đánh lại khi đủ chắc
-        lose_n = int(st.get("lose_streak") or 0)
-        if info.get("side") and lose_n >= LOSS_STREAK_PAUSE:
-            need_rec = max(LOSS_RECOVERY_P, float(MODES.get(st["mode"], {}).get("p_side_min") or 0.55) + 0.04)
-            if p_side < need_rec:
-                info["side"] = None
-                info["reason"] = f"Thua {lose_n} tay · chờ chắc ≥{need_rec:.0%} (hiện {p_side:.0%})"
-                p_side = info["p"] if info.get("p_tai", 0.5) >= 0.5 else 1 - info.get("p_tai", 0.5)
+        # Dự đoán từ API ngoài — không còn thuật toán nội bộ
+        info = external_predict_or_skip(st, table, sid)
+        st["engine"].last_info = info
+        p_side = float(info.get("p") or 0.5)
         reason = explain_round_reason(info, st)
         pend = {
             "sid": sid, "table": table, "pred": info["side"], "p_side": p_side, "p_tai": info["p_tai"],
@@ -2416,14 +2068,12 @@ def settle_round(cid, res, ws_dices, pend, table=DEFAULT_TABLE):
     sid = pend["sid"] if pend else st.get("session_id")
     dice = ws_dices or []
 
-    # Học ngay từ sự kiện kết quả websocket để phiên tiếp theo không dùng lịch sử cũ.
+    # Nạp kết quả phiên vào store (chỉ lưu lịch sử, không học mô hình).
     with state_lock:
         if pend is not None:
             if sid is not None:
                 st["engine"].ingest([{"session": normalize_sid(sid), "result": res,
                                       "total": sum(dice) if dice else None, "dice": dice}])
-            st["engine"].learn(pend.get("experts", {}), pend.get("p_tai", 0.5), res)
-            st["engine"].record_shadow(pend.get("strat", {}), res)
             if pend.get("pred") is not None:
                 st["engine"].record(pend["pred"], pend.get("p_side", 0.5), res)
             pend["done"] = True
@@ -2442,6 +2092,9 @@ def settle_round(cid, res, ws_dices, pend, table=DEFAULT_TABLE):
                 st["total_lose"] += 1
                 st["lose_streak"] += 1
                 st["win_streak"] = 0
+                # Sai 3 tay liên tiếp trên bàn này → tự tắt Auto bàn
+                if st["lose_streak"] >= 3:
+                    st["auto"] = False
 
     # API lịch sử bổ sung xúc xắc/phiên; API tài khoản xác nhận lãi lỗ thật, không mô phỏng.
     history = fetch_latest_results(table, expect=res, retries=2)
@@ -2510,8 +2163,6 @@ def settle_round(cid, res, ws_dices, pend, table=DEFAULT_TABLE):
         if not updated:
             logs.append(rec)
         st["last_result"] = rec
-        if st.get("martingale"):
-            st["mg_step"] = min(8, int(st.get("mg_step") or 0) + 1) if (placed and pred_ok is False) else 0
         persist_logs(cid, table, st["bet_log"])
         if placed:
             movement = signed(delta) if delta is not None else "chưa đối soát số dư"
@@ -2562,13 +2213,6 @@ def start_websocket(cid, token, table=DEFAULT_TABLE):
     @sio.event(namespace=cfg["namespace"])
     def connect():
         st["ws_connected"] = True
-        arr = fetch_history_from_api(table, MAX_HISTORY)
-        if arr:
-            with state_lock:
-                st["engine"].ingest(arr)
-            push_event(cid, TABLES[table]["label"], f"Đã kết nối · {len(st['engine'].recs)} phiên", "ok")
-        else:
-            push_event(cid, TABLES[table]["label"], "WebSocket OK nhưng chưa có lịch sử", "warn")
 
     @sio.on("new-session", namespace=cfg["namespace"])
     def new_sess(d):
@@ -2584,13 +2228,6 @@ def start_websocket(cid, token, table=DEFAULT_TABLE):
             pend = st["pending"]
             if not st["auto"] or pend is None or pend["pred"] is None or pend["sent"]:
                 return
-            # Khóa an toàn: đang chuỗi thua ≥3 và tín hiệu chưa đủ mạnh
-            lose_n = int(st.get("lose_streak") or 0)
-            if lose_n >= LOSS_STREAK_PAUSE:
-                ps = float(pend.get("p_side") or 0)
-                need_rec = max(LOSS_RECOVERY_P, float(MODES.get(st["mode"], {}).get("p_side_min") or 0.55) + 0.04)
-                if ps < need_rec:
-                    return
             amount = current_bet(st)
             block = risk_block(st, amount)
             root = user_states.get(cid, {})
@@ -2700,6 +2337,19 @@ def stop_user(cid, table=None):
         st["ws_connected"] = False
         st["gen"] += 1
         st["auto"] = False
+        # Mỗi lần dừng: xoá hết log cược
+        st["bet_log"].clear()
+        st["total_win"] = 0
+        st["total_lose"] = 0
+        st["total_bet"] = 0
+        st["win_streak"] = 0
+        st["lose_streak"] = 0
+        st["mg_step"] = 0
+        st["profit"] = 0
+        try:
+            persist_logs(cid, key, [])
+        except Exception:
+            pass
         sio = active_sockets.pop((cid, key), None)
         if sio is not None:
             try:
